@@ -1,0 +1,6 @@
+black
+chardet
+mypy
+pyproject-flake8
+rich
+types-chardet
