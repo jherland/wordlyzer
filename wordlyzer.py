@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import IntEnum
-from functools import cached_property
+from functools import cache
+from itertools import product
 import logging
 from pathlib import Path
 import random
@@ -18,6 +20,7 @@ from rich.columns import Columns
 from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.rule import Rule
 
 logger = logging.getLogger(__file__ if __name__ == "__main__" else __name__)
 
@@ -54,80 +57,78 @@ class CharResult(IntEnum):
         return f"[{styles[self.value]}]{c}[/]"
 
 
-class WordlePrompt(Prompt):
-    illegal_choice_message = "[prompt.invalid.choice]Not a valid word!"
+@cache
+def tally(guess: str, solution: str) -> tuple[CharResult, ...]:
+    assert len(guess) == len(solution)
+    incorrect = [s for g, s in zip(guess, solution) if g != s]
+
+    def inner() -> Iterator[tuple[str, CharResult]]:
+        for g, s in zip(guess, solution):
+            if g == s:
+                yield CharResult.correct
+            elif g in incorrect:
+                yield CharResult.elsewhere
+                incorrect.remove(g)
+            else:
+                yield CharResult.missing
+
+    return tuple(inner())
 
 
 @dataclass(frozen=True)
 class Guess:
-    word: str
     guess: str
-
-    @classmethod
-    def ask(cls, solution: str, choices: list[str]) -> Guess:
-        assert solution in choices
-        guess = WordlePrompt.ask(
-            "[bold]What is your guess?[/]",
-            choices=choices,
-            show_choices=False,
-        )
-        return cls(solution, guess)
+    tally: tuple[CharResult, ...]
 
     def __str__(self) -> str:
         return self.format()
 
+    def __iter__(self) -> Iterator[tuple[str, CharResult]]:
+        return zip(self.guess, self.tally)
+
     def correct(self) -> bool:
-        return self.guess == self.word
-
-    @cached_property
-    def tally(self) -> tuple[tuple[str, CharResult], ...]:
-        assert len(self.word) == len(self.guess)
-        incorrect = [w for g, w in zip(self.guess, self.word) if g != w]
-
-        def inner() -> Iterator[tuple[str, CharResult]]:
-            for g, w in zip(self.guess, self.word):
-                if g == w:
-                    yield g, CharResult.correct
-                elif g in incorrect:
-                    yield g, CharResult.elsewhere
-                    incorrect.remove(g)
-                else:
-                    yield g, CharResult.missing
-
-        return tuple(inner())
+        return all(t == CharResult.correct for t in self.tally)
 
     def format(self, invisible: bool = False) -> str:
-        return "".join(
-            res.format(" " if invisible else c) for c, res in self.tally
-        )
+        if invisible:
+            return "".join(res.format(" ") for res in self.tally)
+        else:
+            return "".join(res.format(c) for c, res in self)
 
     def filter(self, words: list[str]) -> list[str]:
         """Return the words that match this guess"""
-        return [w for w in words if Guess(w, self.guess).tally == self.tally]
+        return [w for w in words if tally(self.guess, w) == self.tally]
 
 
 def analyze(guess: str, words: list[str]) -> Counter[str]:
     assert guess in words
-    count = Counter(Guess(guess, word).format(invisible=True) for word in words)
+    count = Counter(
+        Guess(guess, tally(guess, w)).format(invisible=True) for w in words
+    )
     return count
 
 
+quick_and_dirty_cache = {}
+
+
 def find_best_guess_fast(words: list[str]) -> tuple[str, int]:
-    min_count, best_guess = len(words), ""
-    for guess in words:
-        if len(set(guess)) < len(guess):
-            continue  # ignore guesses with repeated chars
-        count = 0
-        for word in words:
-            if len(set(guess + word)) == len(set(guess)) + len(set(word)):
-                count += 1
-            if count >= min_count:
-                break
-        else:
-            if count < min_count:
-                min_count = count
-                best_guess = guess
-    return best_guess, min_count
+    if len(words) not in quick_and_dirty_cache:
+        min_count, best_guess = len(words), ""
+        for guess in words:
+            if len(set(guess)) < len(guess):
+                continue  # ignore guesses with repeated chars
+            count = 0
+            for word in words:
+                if len(set(guess + word)) == len(set(guess)) + len(set(word)):
+                    count += 1
+                if count >= min_count:
+                    break
+            else:
+                if count < min_count:
+                    min_count = count
+                    best_guess = guess
+        quick_and_dirty_cache[len(words)] = (best_guess, min_count)
+    return quick_and_dirty_cache[len(words)]
 
 
 def find_best_guess_correct(words: list[str]) -> tuple[str, int]:
@@ -144,16 +145,8 @@ def find_best_guess(words: list[str]) -> tuple[str, int]:
         return find_best_guess_correct(words)
 
 
-def keyboard(guesses: list[Guess]) -> str:
-    chars: dict[str, CharResult] = defaultdict(lambda: CharResult.unknown)
-    for guess in guesses:
-        for c, result in guess.tally:
-            chars[c] = max(result, chars[c])
-
-    return "\n".join(
-        " " * i + " ".join(chars[c].format(c) for c in row)
-        for i, row in enumerate(["qwertyuiop", "asdfghjkl", "zxcvbnm"])
-    )
+class WordlePrompt(Prompt):
+    illegal_choice_message = "[prompt.invalid.choice]Not a valid word!"
 
 
 class Wordle:
@@ -161,21 +154,39 @@ class Wordle:
         self.words = sorted(words)
         self.max_rounds = max_rounds
 
-    def valid_guess(self, guess: str) -> bool:
-        return guess in self.words
+    def ask_for_guess(self, choices: list[str]) -> str:
+        return WordlePrompt().ask(
+            "[bold]What is your guess?[/]",
+            choices=choices,
+            show_choices=False,
+        )
+
+    @staticmethod
+    def keyboard(guesses: list[Guess]) -> str:
+        chars: dict[str, CharResult] = defaultdict(lambda: CharResult.unknown)
+        for guess in guesses:
+            for c, result in guess:
+                chars[c] = max(result, chars[c])
+
+        return "\n".join(
+            " " * i + " ".join(chars[c].format(c) for c in row)
+            for i, row in enumerate(["qwertyuiop", "asdfghjkl", "zxcvbnm"])
+        )
+
+    def eval_guess(self, word: str) -> Guess:
+        raise NotImplementedError
 
     def play(self, assist: bool = True) -> list[Guess]:
-        word = random.choice(self.words)
-        logger.debug(f"Chose word: {word!r}")
         guesses: list[Guess] = []
         candidates = self.words
 
         while len(guesses) < self.max_rounds:
             if assist:
                 logger.info(f"Best guess is {find_best_guess(candidates)!r}")
-            guess = Guess.ask(word, self.words)
+            word = self.ask_for_guess(self.words)
+            guess = self.eval_guess(word)
             guesses.append(guess)
-            count = analyze(guess.guess, candidates)
+            count = analyze(word, candidates)
             if assist:
                 print(
                     " ".join(
@@ -188,7 +199,7 @@ class Wordle:
                 Columns(
                     [
                         Panel.fit(str(guess), padding=1),
-                        Panel.fit(keyboard(guesses)),
+                        Panel.fit(self.keyboard(guesses)),
                     ],
                     padding=5,
                 )
@@ -197,8 +208,41 @@ class Wordle:
                 print("[bold]Correct![/]")
                 break
         else:
-            print(f"Sorry, you ran out of turns! The word was: [bold]{word}[/]")
+            print(f"Sorry, out of turns!")
         return guesses
+
+
+class InternalWordle(Wordle):
+    def eval_guess(self, word: str) -> Guess:
+        return Guess(word, tally(word, self.solution))
+
+    def play(self, *args, **kwargs) -> list[Guess]:
+        self.solution = random.choice(self.words)
+        logger.debug(f"Chose word: {self.solution!r}")
+        try:
+            return super().play(*args, **kwargs)
+        finally:
+            print(f"The solution was: [bold]{self.solution}[/]")
+
+
+class ExternalWordle(Wordle):
+    def ask_for_tally(self, length: int) -> tuple[CharResult, ...]:
+        answers = {
+            "b": CharResult.missing,  # black
+            "y": CharResult.elsewhere,  # yellow
+            "g": CharResult.correct,  # green
+        }
+        choices = {"".join(answer) for answer in product(*(["byg"] * length))}
+        colors = WordlePrompt.ask(
+            "[bold]What colors did you get?[/] "
+            "([bold]b[/]lack, [bold]y[/]ellow, [bold]g[/]reen)",
+            choices=choices,
+            show_choices=False,
+        )
+        return tuple(answers[c] for c in colors)
+
+    def eval_guess(self, word: str) -> Guess:
+        return Guess(word, self.ask_for_tally(len(word)))
 
 
 def main():
@@ -218,6 +262,19 @@ def main():
         help="What length words to analyze (default: %(default)s)",
     )
     parser.add_argument(
+        "-r",
+        "--rounds",
+        type=int,
+        default=6,
+        help="How many rounds per game (default: %(default)s)",
+    )
+    parser.add_argument(
+        "-x",
+        "--external",
+        action="store_true",
+        help="Provide analysis (i.e. cheat) for external game",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -231,6 +288,8 @@ def main():
         default=0,
         help="Decrease log level",
     )
+    # TODO: Hard vs. normal mode
+    # TODO: Absurdle
 
     args = parser.parse_args()
 
@@ -252,9 +311,21 @@ def main():
             ],
         )
     )
+    find_best_guess_fast(words)  # pre-compute initial guess
     logger.info(f"Read {len(words)} words from {args.wordsfile}")
-    guesses = Wordle(words).play()
-    print(Panel.fit("\n".join(guess.format() for guess in guesses)))
+
+    if args.external:
+        game = ExternalWordle(words, args.rounds)
+    else:
+        game = InternalWordle(words, args.rounds)
+
+    with suppress(KeyboardInterrupt):
+        while True:
+            print(Rule("New game! (Ctrl+C to quit)"))
+            guesses = game.play()
+            print(Panel.fit("\n".join(guess.format() for guess in guesses)))
+
+    print()
 
 
 if __name__ == "__main__":
