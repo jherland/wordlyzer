@@ -62,7 +62,7 @@ def tally(guess: str, solution: str) -> tuple[CharResult, ...]:
     assert len(guess) == len(solution)
     incorrect = [s for g, s in zip(guess, solution) if g != s]
 
-    def inner() -> Iterator[tuple[str, CharResult]]:
+    def inner() -> Iterator[CharResult]:
         for g, s in zip(guess, solution):
             if g == s:
                 yield CharResult.correct
@@ -150,7 +150,7 @@ class WordlePrompt(Prompt):
 
 
 class Wordle:
-    def __init__(self, words: Iterable[str], max_rounds: int = 6):
+    def __init__(self, *, words: Iterable[str], max_rounds: int = 6):
         self.words = sorted(words)
         self.max_rounds = max_rounds
 
@@ -176,7 +176,7 @@ class Wordle:
     def eval_guess(self, word: str) -> Guess:
         raise NotImplementedError
 
-    def play(self, assist: bool = True) -> list[Guess]:
+    def play(self, *, assist: bool = True) -> list[Guess]:
         guesses: list[Guess] = []
         candidates = self.words
 
@@ -208,7 +208,7 @@ class Wordle:
                 print("[bold]Correct![/]")
                 break
         else:
-            print(f"Sorry, out of turns!")
+            print("Sorry, out of turns!")
         return guesses
 
 
@@ -220,12 +220,12 @@ class InternalWordle(Wordle):
     def eval_guess(self, word: str) -> Guess:
         return Guess(word, tally(word, self.solution))
 
-    def play(self, *args, **kwargs) -> list[Guess]:
+    def play(self, **kwargs: bool) -> list[Guess]:
         if self.solution is None:
             self.solution = random.choice(self.words)
         logger.debug(f"Chose word: {self.solution!r}")
         try:
-            return super().play(*args, **kwargs)
+            return super().play(**kwargs)
         finally:
             print(f"The solution was: [bold]{self.solution}[/]")
             self.solution = None
@@ -238,8 +238,8 @@ class ExternalWordle(Wordle):
             "y": CharResult.elsewhere,  # yellow
             "g": CharResult.correct,  # green
         }
-        choices = {"".join(answer) for answer in product(*(["byg"] * length))}
-        colors = WordlePrompt.ask(
+        choices = ["".join(answer) for answer in product(*(["byg"] * length))]
+        colors = Prompt.ask(
             "[bold]What colors did you get?[/] "
             "([bold]b[/]lack, [bold]y[/]ellow, [bold]g[/]reen)",
             choices=choices,
@@ -257,7 +257,7 @@ def main():
         "-f",
         "--wordsfile",
         type=Path,
-        default="words",
+        default="./words",
         help="File with words (default: %(default)s)",
     )
     parser.add_argument(
@@ -323,7 +323,7 @@ def main():
         handlers=[RichHandler(rich_tracebacks=True)],
     )
 
-    words = set(
+    words = sorted(
         parse_words(
             args.wordsfile,
             filters=[
@@ -337,10 +337,14 @@ def main():
     logger.info(f"Read {len(words)} words from {args.wordsfile}")
 
     if args.external:
-        game = ExternalWordle(words, args.rounds)
+        game: Wordle = ExternalWordle(words=words, max_rounds=args.rounds)
         args.assist = True
     else:
-        game = InternalWordle(words, args.rounds, solution=args.word)
+        game = InternalWordle(words=words, max_rounds=args.rounds)
+        if args.word:
+            if args.word not in words:
+                parser.error(f"--word {args.word!r} is not in dictionary!")
+            game.solution = args.word
 
     if args.assist:
         find_best_guess_fast(words)
