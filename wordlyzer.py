@@ -269,10 +269,22 @@ def main():
         help="How many rounds per game (default: %(default)s)",
     )
     parser.add_argument(
+        "-a",
+        "--assist",
+        action="store_true",
+        help="Provide analysis while playing",
+    )
+    parser.add_argument(
         "-x",
         "--external",
         action="store_true",
         help="Provide analysis (i.e. cheat) for external game",
+    )
+    parser.add_argument(
+        "-o",
+        "--one",
+        action="store_true",
+        help="Play a one-off game, do not auto-repeat",
     )
     parser.add_argument(
         "-v",
@@ -311,19 +323,25 @@ def main():
             ],
         )
     )
-    find_best_guess_fast(words)  # pre-compute initial guess
     logger.info(f"Read {len(words)} words from {args.wordsfile}")
 
     if args.external:
         game = ExternalWordle(words, args.rounds)
+        args.assist = True
     else:
         game = InternalWordle(words, args.rounds)
+
+    if args.assist:
+        find_best_guess_fast(words)
+        logger.info("Pre-computed initial guess")
 
     with suppress(KeyboardInterrupt):
         while True:
             print(Rule("New game! (Ctrl+C to quit)"))
-            guesses = game.play()
+            guesses = game.play(assist=args.assist)
             print(Panel.fit("\n".join(guess.format() for guess in guesses)))
+            if args.one:
+                break
 
     print()
 
