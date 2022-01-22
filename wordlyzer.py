@@ -213,16 +213,22 @@ class Wordle:
 
 
 class InternalWordle(Wordle):
+    def __init__(self, *args, solution = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.solution = solution
+
     def eval_guess(self, word: str) -> Guess:
         return Guess(word, tally(word, self.solution))
 
     def play(self, *args, **kwargs) -> list[Guess]:
-        self.solution = random.choice(self.words)
+        if self.solution is None:
+            self.solution = random.choice(self.words)
         logger.debug(f"Chose word: {self.solution!r}")
         try:
             return super().play(*args, **kwargs)
         finally:
             print(f"The solution was: [bold]{self.solution}[/]")
+            self.solution = None
 
 
 class ExternalWordle(Wordle):
@@ -281,6 +287,11 @@ def main():
         help="Provide analysis (i.e. cheat) for external game",
     )
     parser.add_argument(
+        "-w",
+        "--word",
+        help="Provide initial solution word (default: random choice)",
+    )
+    parser.add_argument(
         "-o",
         "--one",
         action="store_true",
@@ -329,7 +340,7 @@ def main():
         game = ExternalWordle(words, args.rounds)
         args.assist = True
     else:
-        game = InternalWordle(words, args.rounds)
+        game = InternalWordle(words, args.rounds, solution=args.word)
 
     if args.assist:
         find_best_guess_fast(words)
