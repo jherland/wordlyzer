@@ -154,12 +154,8 @@ class Wordle:
         self.words = sorted(words)
         self.max_rounds = max_rounds
 
-    def ask_for_guess(self, choices: list[str]) -> str:
-        return WordlePrompt().ask(
-            "[bold]What is your guess?[/]",
-            choices=choices,
-            show_choices=False,
-        )
+    def retrieve_guess(self, choices: list[str]) -> str:
+        raise NotImplementedError
 
     @staticmethod
     def keyboard(guesses: list[Guess]) -> str:
@@ -173,7 +169,7 @@ class Wordle:
             for i, row in enumerate(["qwertyuiop", "asdfghjkl", "zxcvbnm"])
         )
 
-    def eval_guess(self, word: str) -> Guess:
+    def evaluate_guess(self, word: str) -> Guess:
         raise NotImplementedError
 
     def play(self, *, assist: bool = True) -> list[Guess]:
@@ -183,8 +179,8 @@ class Wordle:
         while len(guesses) < self.max_rounds:
             if assist:
                 logger.info(f"Best guess is {find_best_guess(candidates)!r}")
-            word = self.ask_for_guess(self.words)
-            guess = self.eval_guess(word)
+            word = self.retrieve_guess(self.words)
+            guess = self.evaluate_guess(word)
             guesses.append(guess)
             count = analyze(word, candidates)
             if assist:
@@ -212,12 +208,21 @@ class Wordle:
         return guesses
 
 
-class InternalWordle(Wordle):
-    def __init__(self, *args, solution = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.solution = solution
+class ManualWordle(Wordle):
+    def retrieve_guess(self, choices: list[str]) -> str:
+        return WordlePrompt().ask(
+            "[bold]What is your guess?[/]",
+            choices=choices,
+            show_choices=False,
+        )
 
-    def eval_guess(self, word: str) -> Guess:
+
+class InternalWordle(ManualWordle):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.solution = None
+
+    def evaluate_guess(self, word: str) -> Guess:
         return Guess(word, tally(word, self.solution))
 
     def play(self, **kwargs: bool) -> list[Guess]:
@@ -231,7 +236,7 @@ class InternalWordle(Wordle):
             self.solution = None
 
 
-class ExternalWordle(Wordle):
+class ExternalWordle(ManualWordle):
     def ask_for_tally(self, length: int) -> tuple[CharResult, ...]:
         answers = {
             "b": CharResult.missing,  # black
@@ -247,8 +252,13 @@ class ExternalWordle(Wordle):
         )
         return tuple(answers[c] for c in colors)
 
-    def eval_guess(self, word: str) -> Guess:
+    def evaluate_guess(self, word: str) -> Guess:
         return Guess(word, self.ask_for_tally(len(word)))
+
+
+class AutoWordle(Wordle):
+    def retrieve_guess(self, choices: list[str]) -> str:
+        ...
 
 
 def main():
